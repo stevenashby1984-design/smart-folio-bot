@@ -1,6 +1,10 @@
+cat << 'EOF' > main_loop.py
 import time
 import requests
+import os
+import threading
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 SUPABASE_URL = "https://supabase.co"
 SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
@@ -9,19 +13,36 @@ OKX_BASE_URL = "https://okx.com"
 LOOKBACK = 200
 BASE_RISK_GBP = 1.00
 
+# ==========================================
+# 🌐 FIX: Tiny Web Server for Render Free Tier
+# ==========================================
+class RenderHealthServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Smart Folio Engine Is Live And Scanning!")
+
+def run_health_server():
+    # Render automatically injects a variable called PORT into free web services
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), RenderHealthServer)
+    print(f"🌐 Render Health Check listening on port {port}...")
+    server.serve_forever()
+
+# ==========================================
+# 🤖 Core Trading Signal Logic
+# ==========================================
 def get_all_usdt_symbols():
-    """Dynamically fetches every active crypto pair ending in USDT on OKX"""
     try:
         path = "/api/v5/public/instruments?instType=SPOT"
         res = requests.get(OKX_BASE_URL + path, timeout=10).json()
         if "data" in res:
-            # Filters to find only major assets settled in USDT (e.g., BTC-USDT, ETH-USDT)
             symbols = [item["instId"] for item in res["data"] if item["instId"].endswith("-USDT")]
-            # Sort them and limit to top 50 high-volume tokens to prevent terminal lag
             return sorted(symbols)[:50]
     except Exception as e:
-        print(f"Error fetching dynamic asset list: {e}")
-    return ["BTC-USDT", "ETH-USDT", "SOL-USDT"] # Reliable fallback list
+        print(f"Error fetching asset list: {e}")
+    return ["BTC-USDT", "ETH-USDT", "SOL-USDT"]
 
 def send_alert_to_lovable(symbol, price, action):
     url = f"{SUPABASE_URL}/rest/v1/trade_logs"
@@ -47,40 +68,44 @@ def send_alert_to_lovable(symbol, price, action):
         print(f"Dashboard sync error: {e}")
 
 def run_broad_scanner():
-    # Dynamically discover all active market assets on this loop cycle
     watchlist = get_all_usdt_symbols()
     print(f"\n[{datetime.now()}] 🔄 Smart Folio Edge: Scanning ALL ({len(watchlist)}) Live Assets...")
     
     for symbol in watchlist:
-        # Requesting spot market candle bars
         path = f"/api/v5/market/candles?instId={symbol}&bar=3m&limit={LOOKBACK}"
         try:
             response = requests.get(OKX_BASE_URL + path, timeout=5).json()
             if "data" not in response or not response["data"]: continue
             
             candles = response["data"][::-1]
-            close_prices = [float(candle[4]) for candle in candles]
+            close_prices = [float(candle) for candle in candles]
             current_price = close_prices[-1]
             moving_average = sum(close_prices) / len(close_prices)
             
             if current_price > moving_average:
-                print(f"🔥 BREAKOUT CONFIRMED: {symbol} at ${current_price} (MA: ${moving_average:.2f})")
+                print(f"🔥 BREAKOUT CONFIRMED: {symbol} at ${current_price}")
                 send_alert_to_lovable(symbol, current_price, "BUY SIGNAL")
             
-            # Anti-rate limit safety cushion delay (milliseconds)
             time.sleep(0.1)
-                
         except Exception:
-            continue # Silently bypass minor server connection hiccups
+            continue
 
-if __name__ == "__main__":
-    print("🤖 ======================================================== 🤖")
-    print("🚀 SMART FOLIO FULL EXCHANGE MASS SCANNER IS ONLINE.")
-    print("🤖 ======================================================== 🤖")
+def main_trading_loop():
+    print("🤖 SMART FOLIO FULL EXCHANGE MASS SCANNER IS ONLINE.")
     while True:
         try:
             run_broad_scanner()
-            print("💤 Full scan complete. Sleeping 30 seconds before next deep scan...")
+            print("💤 Full scan complete. Sleeping 30 seconds...")
             time.sleep(30)
-        except KeyboardInterrupt:
-            break
+        except Exception as e:
+            print(f"Loop restart catch: {e}")
+            time.sleep(10)
+
+if __name__ == "__main__":
+    # Start the web port in a separate thread so it answers Render's check instantly
+    web_thread = threading.Thread(target=run_health_server, daemon=True)
+    web_thread.start()
+    
+    # Run our core trading scanner logic on the primary thread
+    main_trading_loop()
+EOF
